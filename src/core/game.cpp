@@ -383,7 +383,7 @@ void game::visit_parent()
     fresh();
 }
 
-std::vector<std::tuple<action, std::string>> game::get_child_actions() const
+std::vector<std::tuple<action, std::string>> game::get_child_actions(uint16_t show_flags) const
 {
     std::vector<std::tuple<action, std::string>> result;
     auto &children = current_node->get_children();
@@ -391,13 +391,13 @@ std::vector<std::tuple<action, std::string>> game::get_child_actions() const
     for(const auto &child : children)
     {
         const action &act = child->get_action();
-        std::string txt = s.pretty_action(act);
+        std::string txt = s.pretty_action(act, show_flags);
         result.push_back({act, txt});
     }
     return result;
 }
 
-std::vector<std::tuple<action, std::string>> game::get_historical_actions() const
+std::vector<std::tuple<action, std::string>> game::get_historical_actions(uint16_t show_flags) const
 {
     std::vector<std::tuple<action, std::string>> result;
     gnode<comments_t>* node = current_node;
@@ -407,7 +407,7 @@ std::vector<std::tuple<action, std::string>> game::get_historical_actions() cons
     {
         const action& act = node->get_action();
         // Pretty print using parent's state (state before the action was applied)
-        std::string txt = node->get_parent()->get_state().pretty_action(act);
+        std::string txt = node->get_parent()->get_state().pretty_action(act, show_flags);
         result.push_back({act, txt});
         node = node->get_parent();
     }
@@ -415,6 +415,39 @@ std::vector<std::tuple<action, std::string>> game::get_historical_actions() cons
     // Reverse since we built it backwards
     std::reverse(result.begin(), result.end());
     return result;
+}
+
+std::vector<std::tuple<action, std::string>> game::get_following_actions(uint16_t show_flags) const
+{
+    std::vector<std::tuple<action, std::string>> result;
+	gnode<comments_t>* node = current_node;
+	
+	if(node->get_parent() != nullptr) {
+		const action& act = node->get_action();
+		std::string txt = node->get_parent()->get_state().pretty_action(act, show_flags);
+		result.push_back({act, txt});
+	}
+    while(!node->get_children().empty() && node->get_children().front() != nullptr)
+    {
+        const action& act = node->get_children().front()->get_action();
+        std::string txt = node->get_state().pretty_action(act, show_flags);
+        result.push_back({act, txt});
+        node = node->get_children().front().get();
+    }
+    return result;
+}
+
+int game::get_current_level() const
+{
+    int lvl = 0;
+    gnode<comments_t>* node = current_node;
+
+    while (node->get_parent() != nullptr)
+    {
+        lvl++;
+        node = node->get_parent();
+    }
+    return lvl;
 }
 
 bool game::visit_child(action act, comments_t comments, std::optional<state> newstate)

@@ -58,8 +58,10 @@ public:
     void set_comments(const comments_t &c) const;
     bool has_parent() const;
     void visit_parent();
-    std::vector<std::tuple<action, std::string>> get_child_actions() const;
-    std::vector<std::tuple<action, std::string>> get_historical_actions() const;
+    std::vector<std::tuple<action, std::string>> get_child_actions(uint16_t flags = state::SHOW_CAPTURE | state::SHOW_PROMOTION) const;
+    std::vector<std::tuple<action, std::string>> get_historical_actions(uint16_t flags = state::SHOW_CAPTURE | state::SHOW_PROMOTION) const;
+	std::vector<std::tuple<action, std::string>> get_following_actions(uint16_t flags = state::SHOW_CAPTURE | state::SHOW_PROMOTION) const;
+    int get_current_level() const;
     /*
     visit_child:
     visit a child node (will create one if that child doesn't exist)
