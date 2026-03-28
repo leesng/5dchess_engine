@@ -95,6 +95,28 @@ std::string range_to_string(const auto range, std::string prefix = "{", std::str
     return oss.str();
 }
 
+template <typename ForEachFunc>
+std::string range_to_string_with_for_each(ForEachFunc for_each_func,
+    std::string prefix = "{",
+    std::string suffix = "}",
+    std::string separator = ", ")
+{
+    std::ostringstream oss;
+    oss << prefix;
+    bool first = true;
+
+    for_each_func([&](int elem) {
+        if (!first) {
+            oss << separator;
+        }
+        first = false;
+        oss << elem;
+        });
+
+    oss << suffix;
+    return oss.str();
+}
+
 #define SHOW(s) std::cout << #s << ": " << (s) << std::endl;
 
 /*

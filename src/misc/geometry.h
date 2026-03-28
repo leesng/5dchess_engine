@@ -22,8 +22,8 @@ struct HC
     // it looks like: {axis_0, axis_1, ...}
     // where each axis_i is a sorted set of integers representing the allowed values on that axis
     // in actual computation, we only store the indices
-    std::vector<integer_set> axes;
-    const integer_set &operator[](size_t i) const;
+    std::vector<index_set> axes;
+    const index_set&operator[](size_t i) const;
     bool contains(point p) const;
     search_space remove_slice(const slice &s) const;
     search_space remove_point(const point &p) const;
@@ -32,7 +32,7 @@ struct HC
 
 struct slice
 {
-    std::map<int, integer_set> fixed_axes; // map from axis index to all options of the fixed value
+    std::map<int, index_set> fixed_axes; // map from axis index to all options of the fixed value
     // other axes are free, i.e. all included in the slice represented
     bool contains(const point &p) const;
     std::string to_string() const;

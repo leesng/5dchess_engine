@@ -3,7 +3,7 @@
 #include <sstream>
 #include "utils.h"
 
-const integer_set &HC::operator[](size_t i) const
+const index_set &HC::operator[](size_t i) const
 {
     return axes[i];
 }
@@ -69,7 +69,7 @@ search_space HC::remove_point(const point &p) const
     {
         HC x = remaining;
         x.axes[i].erase(p[i]);
-        integer_set singleton = {p[i]};
+        index_set singleton = {p[i]};
         remaining.axes[i] = singleton;
         if(!x.axes[i].empty()) // do not include empty hc
         {
@@ -89,7 +89,12 @@ std::string HC::to_string(bool verbose) const
     for(size_t i = 0; i < axes.size(); i++)
     {
         oss << " Axis " << i << ": ";
-        oss << range_to_string(axes[i]);
+        //oss << range_to_string(axes[i]);
+        oss << range_to_string_with_for_each(
+            [this, i](auto&& cb) {
+                axes[i].for_each(std::forward<decltype(cb)>(cb));
+            }
+        );
         oss << "\n";
     }
     return oss.str();
@@ -102,7 +107,12 @@ std::string slice::to_string() const
     for(const auto& [k, v] : fixed_axes)
     {
         oss << "On axis " << k << ", fixing ";
-        oss << range_to_string(v) << "\n";
+       // oss << range_to_string(v) << "\n";
+        oss << range_to_string_with_for_each(
+            [this, v](auto&& cb) {
+                v.for_each(std::forward<decltype(cb)>(cb));
+            }
+        ) << "\n";
     }
     return oss.str();
 }

@@ -110,7 +110,7 @@ std::tuple<HC_info, search_space> HC_info::build_HC(const state& s)
     std::vector<std::vector<semimove>> axis_coords; // axis_coords[i] is the set of all moves on i-th playable board
     HC universe;
     int new_axis, dimension;
-    std::vector<integer_set> nonbranching_axes, branching_axes;
+    //std::vector<integer_set> nonbranching_axes, branching_axes;
     auto [mandatory_timelines, optional_timelines, unplayable_timelines] = s.get_timeline_status();
     auto playable_timelines = concat_vectors(mandatory_timelines, optional_timelines);
     assert(!s.can_submit());
@@ -301,12 +301,12 @@ std::tuple<HC_info, search_space> HC_info::build_HC(const state& s)
     universe.axes.reserve(dimension);
     for(int n = 0; n < dimension; n++)
     {
-        integer_set coords;
+        index_set coords;
         // on nth dimension, the hypercube has coordinates 0, 1, ..., m avialible
         // which corresponds to axis_coords[n][0], axis_coords[n][1], ...
         for(int i = 0; i < static_cast<int>(axis_coords[n].size()); i++)
         {
-            coords.insert(coords.end(), i);
+            coords.insert(/*coords.end(),*/ i);
         }
         universe.axes.push_back(std::move(coords));
     }
@@ -350,12 +350,12 @@ std::tuple<HC_info, search_space> HC_info::build_HC(const state& s)
     
     // split the search space by number of branches
     HC hc_n_lines = universe;
-    integer_set singleton = {0}, non_null;
+    index_set singleton = {0}, non_null;
     if(new_axis < dimension)
     {
         for(int i = 1; i < static_cast<int>(axis_coords[new_axis].size()); i++)
         {
-            non_null.insert(non_null.end(), i);
+            non_null.insert(/*non_null.end(),*/ i);
         }
         // non_null = {1,2,...,number of branching moves}
         std::fill(hc_n_lines.axes.begin() + new_axis,
@@ -384,8 +384,8 @@ std::optional<point> HC_info::take_point(HC &hc) const
     for(int n = 0; n < dimension; n++)
     {
         bool has_nonjump = false;
-        integer_set ghost_arrive_indices;
-        for(int i : hc[n])
+        index_set ghost_arrive_indices;
+        hc[n].for_each([&](int i) //for(int i : hc[n])
         {
             const semimove& loc = axis_coords[n][i];
             std::visit(overloads {
@@ -398,8 +398,9 @@ std::optional<point> HC_info::take_point(HC &hc) const
                 },
                 [&](const arriving_move& loc) {
                     int from_axis = line_to_axis.at(loc.m.from.l());
-                    auto it = hc.axes[from_axis].find(loc.idx);
-                    if(it == hc.axes[from_axis].end())
+                    //auto it = hc.axes[from_axis].find(loc.idx);
+                    //if(it == hc.axes[from_axis].end())
+                    if (!hc.axes[from_axis].contains(loc.idx))
                     {
                         ghost_arrive_indices.insert(i);
                         dprint("ghost arriving move",n,i, "(source", from_axis, loc.idx,")");//,show_semimove(loc));
@@ -424,11 +425,11 @@ std::optional<point> HC_info::take_point(HC &hc) const
                     }
                 },
             }, loc);
-        }
-        for(int i : ghost_arrive_indices)
+        });
+        ghost_arrive_indices.for_each([&](int i) //for(int i : ghost_arrive_indices)
         {
             hc.axes[n].erase(i);
-        }
+        });
         if(hc.axes[n].empty())
         {
             // search space is empty after prune; abort
@@ -527,8 +528,8 @@ std::optional<slice> HC_info::jump_order_consistent(const point &p, const HC& hc
                  -[s] any branching move on axis n to (l', t') (which is a null_move)
                  i.e. all moves >> (l',t') then creates branch new_l
                  */
-                integer_set s;
-                for(int i : hc[n])
+                index_set s;
+                hc[n].for_each([&](int i) //for(int i : hc[n])
                 {
                     const semimove& loc3 = axis_coords[n][i];
                     if(std::holds_alternative<arriving_move>(loc3))
@@ -539,8 +540,8 @@ std::optional<slice> HC_info::jump_order_consistent(const point &p, const HC& hc
                             s.insert(i);
                         }
                     }
-                }
-                std::map<int, integer_set> fixed_axes {{n, s}, {m, integer_set{im}}};
+                });
+                std::map<int, index_set> fixed_axes {{n, s}, {m, index_set{im}}};
                 slice problem(fixed_axes);
                 dprint("case one; point:", range_to_string(p));
                 dprint("problem", problem.to_string());
@@ -561,8 +562,8 @@ std::optional<slice> HC_info::jump_order_consistent(const point &p, const HC& hc
                 -[s2] on axis for new_l0, any move goes to (l,t)
             */
             int axis_branch = jump_map[critical_tl];
-            integer_set s1, s2;
-            for(int i : hc.axes[n])
+            index_set s1, s2;
+            hc.axes[n].for_each([&](int i) //for(int i : hc.axes[n])
             {
                 const semimove& l1 = axis_coords[n][i];
                 if(std::holds_alternative<arriving_move>(l1))
@@ -573,8 +574,8 @@ std::optional<slice> HC_info::jump_order_consistent(const point &p, const HC& hc
                         s1.insert(i);
                     }
                 }
-            }
-            for(int i : hc.axes[axis_branch])
+            });
+            hc.axes[axis_branch].for_each([&](int i) //for(int i : hc.axes[axis_branch])
             {
                 const semimove& l2 = axis_coords[axis_branch][i];
                 if(std::holds_alternative<arriving_move>(l2))
@@ -585,8 +586,8 @@ std::optional<slice> HC_info::jump_order_consistent(const point &p, const HC& hc
                         s2.insert(i);
                     }
                 }
-            }
-            std::map<int, integer_set> fixed_axes {{n, s1}, {axis_branch, s2}};
+            });
+            std::map<int, index_set> fixed_axes {{n, s1}, {axis_branch, s2}};
             slice problem(fixed_axes);
             dprint("case two; point:", range_to_string(p));
             dprint("problem", problem.to_string());
@@ -728,8 +729,8 @@ std::optional<slice> HC_info::test_present(const point &p, const HC& hc) const
             {
                 continue;
             }
-            integer_set s;
-            for(int i : hc[n])
+            index_set s;
+            hc[n].for_each([&](int i) //for(int i : hc[n])
             {
                 semimove loc = axis_coords[n][i];
                 if(std::holds_alternative<null_move>(loc))
@@ -745,7 +746,7 @@ std::optional<slice> HC_info::test_present(const point &p, const HC& hc) const
                         s.insert(i);
                     }
                 }
-            }
+            });
             problem.fixed_axes[n] = s;
         
         }
@@ -804,14 +805,14 @@ std::optional<slice> HC_info::find_checks(const point &p, const HC& hc) const
         if(line_to_axis.contains(check.from.l()))
         {
             int n1 = line_to_axis.at(check.from.l());
-            integer_set not_taking;
-            for(int i : hc.axes[n1])
+            index_set not_taking;
+            hc.axes[n1].for_each([&](int i) //for(int i : hc.axes[n1])
             {
                 semimove loc = axis_coords[n1][i];
                 /* if there isn't a new board on the same place, it won't create the same check*/
                 if(std::holds_alternative<null_move>(loc) || !is_next(extract_tl(loc).first,check.from.t()))
                 {
-                    continue;
+                    return;// continue;
                 }
                 std::shared_ptr<board> newboard = extract_board(loc);
                 if(sliding_type)
@@ -848,7 +849,7 @@ std::optional<slice> HC_info::find_checks(const point &p, const HC& hc) const
                     dprint("axis", n1, "not taking (untouched)", i);
                     not_taking.insert(i);
                 }
-            }
+            });
                 problem.fixed_axes.insert({n1, not_taking});
         }
         /* on axis for check.to.l():
@@ -871,15 +872,15 @@ std::optional<slice> HC_info::find_checks(const point &p, const HC& hc) const
             }
             else
             {
-                integer_set expose_royal;
-                for(int i : hc.axes[n2])
+                index_set expose_royal;
+                hc.axes[n2].for_each([&](int i) //for(int i : hc.axes[n2])
                 {
                     semimove loc = axis_coords[n2][i];
                     std::shared_ptr<board> newboard;
                     /* if there isn't a new board on the same place, do nothing*/
                     if(std::holds_alternative<null_move>(loc) || !is_next(extract_tl(loc).first, check.to.t()))
                     {
-                        continue;
+                        return; //continue;
                     }
                     else
                     {
@@ -893,7 +894,7 @@ std::optional<slice> HC_info::find_checks(const point &p, const HC& hc) const
                         dprint("axis", n2, "expose royal", i);
                         expose_royal.insert(i);
                     }
-                }
+                });
                 problem.fixed_axes.insert({n2, expose_royal});
             }
         }
@@ -916,14 +917,14 @@ std::optional<slice> HC_info::find_checks(const point &p, const HC& hc) const
                 else
                 {
                     bitboard_t z = pmask(crossed.xy());
-                    integer_set not_blocking;
-                    for(int i : hc.axes[n])
+                    index_set not_blocking;
+                    hc.axes[n].for_each([&](int i) //for(int i : hc.axes[n])
                     {
                         semimove loc = axis_coords[n][i];
                         /* if there isn't a board, then nothing pass through it*/
                         if(std::holds_alternative<null_move>(loc) || !is_next(extract_tl(loc).first, crossed.t()))
                         {
-                            continue;
+                            return; //continue;
                         }
                         std::shared_ptr<board> newboard = extract_board(loc);
                         /* if the very place is empty, then it is clearly not blocking*/
@@ -932,7 +933,7 @@ std::optional<slice> HC_info::find_checks(const point &p, const HC& hc) const
                             dprint(n, i, sliding_type, show_semimove(loc));
                             dprint("axis", n, "not blocking (empty)", i);
                             not_blocking.insert(i);
-                            continue;
+                            return; //continue;
                         }
                         /* on the crossed point, if a hostile piece with the same sliding type
                          of the attacking piece is placed here, it doesn't completely resolve the check
@@ -962,7 +963,7 @@ std::optional<slice> HC_info::find_checks(const point &p, const HC& hc) const
                                 dprint(n, i, sliding_type, show_semimove(loc));
                                 dprint("axis", n, "not blocking (sliding)", i);
                                 not_blocking.insert(i);
-                                continue;
+                                return; //continue;
                             }
                         }
                         /* on the crossed point, if a friendly royal piece is there
@@ -975,9 +976,9 @@ std::optional<slice> HC_info::find_checks(const point &p, const HC& hc) const
                             dprint(n, i, sliding_type, show_semimove(loc));
                             dprint("axis", n, "not blocking (expose royal)", i);
                             not_blocking.insert(i);
-                            continue;
+                            return; //continue;
                         }
-                    }
+                    });
                     problem.fixed_axes[n] = not_blocking;
                 }
             }
