@@ -10,6 +10,7 @@
 #include <tuple>
 #include <utility>
 #include <iostream>
+#include <functional>
 #include "multiverse.h"
 #include "action.h"
 #include "generator.h"
@@ -169,6 +170,13 @@ public:
     generator<vec4> gen_piece_move(vec4 p, bool c) const;
     std::string to_string() const;
     std::string show_fen() const;
+
+	template <bool COLOR> bool process_been_checked_boards(std::vector<std::pair<int,std::vector<uint64_t>>> &operable_boards) const;
+    template <bool COLOR> std::tuple<std::vector<std::pair<int, std::vector<uint64_t>>>,
+        std::vector<std::pair<int, std::vector<uint64_t>>>,
+        std::vector<std::pair<int, int>>> get_observation_information() const;
+
+    match_status_t get_match_status(std::function<void()> cb = nullptr) const;
     
     /*
     parse_move: Given a state `s` and a move in string format `move`, try to parse the move and match it to a unique full_move in the context of state `s`.
@@ -178,6 +186,7 @@ public:
     using parse_pgn_res = std::tuple<std::optional<full_move>, std::optional<piece_t>, std::vector<full_move>>;
     parse_pgn_res parse_move(const pgnparser_ast::move &move) const;
     parse_pgn_res parse_move(const std::string &move) const;
+
 };
 
 #include "state.inl"

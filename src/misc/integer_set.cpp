@@ -1,117 +1,107 @@
 #include "integer_set.h"
 
-#include <algorithm>
 
-bool integer_set::contains(int value) const
+bool integer_set::contains(value_type value) const
 {
-    return std::binary_search(data.begin(), data.end(), value);
+    size_t block_index = value >> block_shift;
+    size_t bit_index = value & block_mask;
+    if(block_index >= data.size())
+    {
+        return false;
+    }
+    return data[block_index] & (static_cast<block_t>(1) << bit_index);
 }
 
 bool integer_set::empty() const noexcept
 {
-    return data.empty();
+    for(const block_t &block : data)
+    {
+        if(block != 0)
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 integer_set::size_type integer_set::size() const noexcept
 {
-    return data.size();
-}
-
-integer_set::iterator integer_set::begin()
-{
-    return data.begin();
-}
-
-integer_set::const_iterator integer_set::begin() const
-{
-    return data.begin();
-}
-
-integer_set::const_iterator integer_set::cbegin() const
-{
-    return data.cbegin();
-}
-
-integer_set::iterator integer_set::end()
-{
-    return data.end();
-}
-
-integer_set::const_iterator integer_set::end() const
-{
-    return data.end();
-}
-
-integer_set::const_iterator integer_set::cend() const
-{
-    return data.cend();
-}
-
-integer_set::iterator integer_set::insert(int value)
-{
-    auto position = std::lower_bound(data.begin(), data.end(), value);
-    if(position != data.end() && *position == value)
+    size_type count = 0;
+    for(const block_t &block : data)
     {
-        return position;
+        count += std::popcount(block);
     }
-    return data.insert(position, value);
+    return count;
 }
 
-integer_set::iterator integer_set::insert(const_iterator /*hint*/, int value)
+bool integer_set::intersects(const integer_set &other) const noexcept
 {
-    return insert(value);
+    size_t min_size = std::min(data.size(), other.data.size());
+    for(size_t i = 0; i < min_size; i++)
+    {
+        if(data[i] & other.data[i])
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
-bool integer_set::erase(int value)
+bool integer_set::erase(value_type value)
 {
-    auto position = std::lower_bound(data.begin(), data.end(), value);
-    if(position == data.end() || *position != value)
+    size_t block_index = value >> block_shift;
+    size_t bit_index = value & block_mask;
+    if(block_index >= data.size())
     {
         return false;
     }
-    data.erase(position);
-    return true;
+    block_t &block = data[block_index];
+    bool was_set = block & (static_cast<block_t>(1) << bit_index);
+    block &= ~(static_cast<block_t>(1) << bit_index);
+    return was_set;
 }
 
-integer_set::const_iterator integer_set::find(int value) const
+integer_set integer_set::operator|(const integer_set &other) const
 {
-    auto position = std::lower_bound(data.begin(), data.end(), value);
-    if(position == data.end() || *position != value)
-    {
-        return data.end();
-    }
-    return position;
+    integer_set result = *this;
+    result |= other;
+    return result;
+}
+
+integer_set integer_set::operator&(const integer_set &other) const
+{
+    integer_set result = *this;
+    result &= other;
+    return result;
 }
 
 void integer_set::minus(const integer_set &other)
 {
-    auto junk_start = data.begin();
-    auto it_a = data.begin();
-    auto end_a = data.end();
-    auto it_b = other.cbegin();
-    auto end_b = other.cend();
-
-    while(it_a != end_a && it_b != end_b)
+    size_t min_size = std::min(data.size(), other.data.size());
+    for(size_t i = 0; i < min_size; i++)
     {
-        if(*it_a < *it_b)
-        {
-            *junk_start++ = *it_a++;
-        }
-        else if(*it_b < *it_a)
-        {
-            ++it_b;
-        }
-        else
-        {
-            ++it_a;
-            ++it_b;
-        }
+        data[i] &= ~other.data[i];
     }
+}
 
-    while(it_a != end_a)
+integer_set integer_set::operator|=(const integer_set &other)
+{
+    size_t max_size = std::max(data.size(), other.data.size());
+    data.resize(max_size, 0);
+    for(size_t i = 0; i < other.data.size(); i++)
     {
-        *junk_start++ = *it_a++;
+        data[i] |= other.data[i];
     }
+    return *this;
+}
 
-    data.erase(junk_start, data.end());
+integer_set integer_set::operator&=(const integer_set &other)
+{
+    size_t min_size = std::min(data.size(), other.data.size());
+    data.resize(min_size, 0);
+    for(size_t i = 0; i < min_size; i++)
+    {
+        data[i] &= other.data[i];
+    }
+    return *this;
 }

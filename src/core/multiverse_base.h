@@ -33,7 +33,6 @@ class multiverse
 {
 private:
     const int size_x, size_y; // board size
-    //const int l0_min, l0_max; // initial timeline range
     std::vector<std::vector<std::shared_ptr<board>>> boards;
     // the following data are derivated from boards:
     int l_min, l_max, active_min, active_max;
@@ -85,6 +84,7 @@ public:
     // modifiers
     void insert_board(int l, int t, bool c, const std::shared_ptr<board>& b_ptr);
     void append_board(int l, const std::shared_ptr<board>& b_ptr);
+	void drop_board(int l);
 
     // getters
     std::pair<int, int> get_board_size() const;
@@ -98,6 +98,10 @@ public:
     
     template<bool SHOW_UMOVE=false>
     std::vector<boards_info_t> get_boards() const;
+    std::vector<std::shared_ptr<board>> get_newboard_by_move(vec4 p, vec4 q, bool player, piece_t promote_to = QUEEN_W) const;
+	template <bool COLOR> std::tuple<std::vector<std::pair<int,std::vector<uint64_t>>>,
+           std::vector<std::pair<int,std::vector<uint64_t>>>,
+           std::vector<std::pair<int,int>>> get_observation_information() const;
     
     std::string to_string() const;
     piece_t get_piece(vec4 a, bool color) const;
@@ -118,6 +122,7 @@ public:
     
     // help functions
     bool inbound(vec4 a, bool color) const;
+	bool outofrange(vec4 p, vec4 q, bool color) const;
     virtual std::unique_ptr<multiverse> clone() const = 0;
     virtual std::string pretty_l(int l) const = 0;
     virtual std::string pretty_lt(vec4 p0) const = 0;

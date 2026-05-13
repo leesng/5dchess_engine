@@ -5,7 +5,7 @@
 #include <tuple>
 #include <iostream>
 #include <sstream>
-#include <set>
+#include <map>
 #include <algorithm>
 #include <iterator>
 #include <optional>
@@ -95,28 +95,6 @@ std::string range_to_string(const auto range, std::string prefix = "{", std::str
     return oss.str();
 }
 
-template <typename ForEachFunc>
-std::string range_to_string_with_for_each(ForEachFunc for_each_func,
-    std::string prefix = "{",
-    std::string suffix = "}",
-    std::string separator = ", ")
-{
-    std::ostringstream oss;
-    oss << prefix;
-    bool first = true;
-
-    for_each_func([&](int elem) {
-        if (!first) {
-            oss << separator;
-        }
-        first = false;
-        oss << elem;
-        });
-
-    oss << suffix;
-    return oss.str();
-}
-
 #define SHOW(s) std::cout << #s << ": " << (s) << std::endl;
 
 /*
@@ -141,16 +119,17 @@ constexpr auto generate_array(std::index_sequence<N...>, F f)
 }
 
 /*
- set minus function
- */
-
-template <typename T>
-std::set<T> set_minus(const std::set<T>& a, const std::set<T>& b)
+ find_or_default: Find the value corresponding to `key` in map `m`. If not found, return `def`.
+*/
+template <typename K, typename V>
+V find_or_default(const std::map<K, V>& m, const K& key, const V& def)
 {
-    std::set<T> result;
-    std::set_difference(a.begin(), a.end(), b.begin(), b.end(),
-                        std::inserter(result, result.begin()));
-    return result;
+    auto it = m.find(key);
+    if (it != m.end())
+    {
+        return it->second;
+    }
+    return def;
 }
 
 /*

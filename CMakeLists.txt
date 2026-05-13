@@ -6,6 +6,7 @@ include(CheckIPOSupported)
 check_ipo_supported(RESULT IPO_SUPPORTED OUTPUT IPO_ERROR)
 if(IPO_SUPPORTED)
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    message(STATUS "LTO supported")
 else()
     message(STATUS "LTO not supported: ${IPO_ERROR}")
 endif()
@@ -72,9 +73,10 @@ elseif(MSVC)
 endif()
 
 # Option for building tests
-option(TEST "Build test executable" ON)
+option(TEST "Build test executable" OFF)
 option(PYMODULE "Build Python module" OFF)
 option(EMMODULE "Build Emscripten/WebAssembly module" OFF)
+option(BUILD_SFML_APP "Build SFML-based 5D chess UI application (5DCUI)" ON)
 
 # Enable testing if TEST option is ON
 if(TEST)
@@ -82,13 +84,13 @@ if(TEST)
 endif()
 
 # Find all source files in src/ and src/core/ directories
-file(GLOB_RECURSE ENGINE_SOURCES 
+file(GLOB_RECURSE ENGINE_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/misc/*.cpp"
 )
 
 # Find all header files
-file(GLOB_RECURSE ENGINE_HEADERS 
+file(GLOB_RECURSE ENGINE_HEADERS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/misc/*.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.inl"
@@ -149,6 +151,111 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
         endforeach()
     endif()
     
+	if(BUILD_SFML_APP)
+		message(STATUS ">>> Compiling SFML-based 5D chess UI (5DCUI)...")
+		set(SFML_ROOT "${CMAKE_SOURCE_DIR}/extern/SFML-3.0.2")
+		
+		file(GLOB_RECURSE SFML_APP_SOURCES 
+			"${CMAKE_CURRENT_SOURCE_DIR}/5DCUI/*.cpp"
+			"${CMAKE_CURRENT_SOURCE_DIR}/5DCUI/*.h"
+		)
+		
+		add_executable(5DCUI ${SFML_APP_SOURCES})
+		
+		target_link_libraries(5DCUI PRIVATE 5dchess_engine_core)
+		
+		target_include_directories(5DCUI PRIVATE 
+			${CMAKE_CURRENT_SOURCE_DIR}/5DCUI
+			${CMAKE_CURRENT_SOURCE_DIR}/src
+			"${SFML_ROOT}/include"
+		)
+		
+		target_link_directories(5DCUI PRIVATE "${SFML_ROOT}/lib")
+		
+		# For static linking with SFML 3.0.2
+		# Define SFML_STATIC macro for static library usage
+		target_compile_definitions(5DCUI PRIVATE SFML_STATIC)
+		
+		if(NOT CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "Debug")
+			# Link with static debug libraries (note the -s suffix for static libraries in SFML 3)
+			target_link_libraries(5DCUI PRIVATE
+				sfml-graphics-s-d
+				sfml-window-s-d
+				sfml-system-s-d
+				freetyped
+			)
+		else()
+			# Link with static release libraries (note the -s suffix for static libraries in SFML 3)
+			target_link_libraries(5DCUI PRIVATE
+				sfml-graphics-s
+				sfml-window-s
+				sfml-system-s
+				freetype
+			)
+		endif()
+		
+		# Platform-specific dependencies for static linking
+		if(WIN32)
+			# Windows dependencies for static linking
+			target_link_libraries(5DCUI PRIVATE
+				opengl32.lib
+				winmm.lib
+				gdi32.lib
+				user32.lib
+				advapi32.lib
+				shell32.lib
+			)
+
+			set_target_properties(5DCUI PROPERTIES
+				LINK_FLAGS "/SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup"
+			)
+
+			# For static linking with Freetype (used by SFML-graphics)
+			# You may need to find and link freetype library if it's not included in SFML
+			# target_link_libraries(5DCUI PRIVATE freetype)
+			
+		elseif(APPLE)
+			# macOS dependencies for static linking
+			find_library(COCOA_LIBRARY Cocoa)
+			find_library(IOKIT_LIBRARY IOKit)
+			find_library(COREFOUNDATION_LIBRARY CoreFoundation)
+			target_link_libraries(5DCUI PRIVATE
+				${COCOA_LIBRARY}
+				${IOKIT_LIBRARY}
+				${COREFOUNDATION_LIBRARY}
+				"-framework OpenGL"
+				"-framework Foundation"
+			)
+			
+		elseif(UNIX AND NOT APPLE)
+			# Linux dependencies for static linking
+			find_package(X11 REQUIRED)
+			find_package(OpenGL REQUIRED)
+			
+			target_link_libraries(5DCUI PRIVATE
+				${X11_LIBRARIES}
+				${OPENGL_LIBRARIES}
+				pthread
+				dl
+			)
+			
+			# For static linking, you may need additional libraries
+			# target_link_libraries(5DCUI PRIVATE
+			#     /usr/lib/x86_64-linux-gnu/libfreetype.a
+			#     /usr/lib/x86_64-linux-gnu/libpng.a
+			#     /usr/lib/x86_64-linux-gnu/libz.a
+			# )
+		endif()
+		
+		set_target_properties(5DCUI PROPERTIES
+			RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+		)
+
+		# Remove DLL copying commands since we're using static linking
+		# No add_custom_command needed for static linking
+		
+	endif()
+
     if(PYMODULE)
         message(STATUS ">>> Building python library...")
         # Add pybind11 for Python bindings

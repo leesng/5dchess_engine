@@ -29,11 +29,13 @@ class board
     };
     std::array<bitboard_t, BBS_INDICES_COUNT> bbs;
     bitboard_t umove_mask;
+    uint64_t contact_info;
 
 public:
     board(std::string fen, int size_x = BOARD_LENGTH, int size_y = BOARD_LENGTH);
     // inline getter functions
     constexpr bitboard_t umove() const { return umove_mask; }
+    constexpr uint64_t& contact() { return contact_info; }
 
     constexpr bitboard_t white() const { return bbs[WHITE]; }
     constexpr bitboard_t black() const { return bbs[BLACK]; }

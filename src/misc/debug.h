@@ -1,6 +1,8 @@
 #ifndef DEBUG_H
 #define DEBUG_H
 
+#include <iostream>
+
 /*
 A simple debug printing utility.
 To enable debug printing, define DEBUGMSG in the .cpp file before including this header.

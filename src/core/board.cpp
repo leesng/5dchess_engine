@@ -6,7 +6,7 @@
 
 #include "magic.h"
 
-board::board(std::string fen, int size_x, int size_y) : bbs{}, umove_mask{0}
+board::board(std::string fen, int size_x, int size_y) : bbs{}, umove_mask{0}, contact_info{0}
 {
     array_board arrb(fen, size_x, size_y);
     for(int i = 0; i < BOARD_SIZE; i++)

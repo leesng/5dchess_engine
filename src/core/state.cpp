@@ -3,6 +3,7 @@
 #include <cassert>
 #include <functional>
 #include "utils.h"
+#include "variants.h"
 #include "pgnparser.h"
 #include "hypercuboid.h"
 
@@ -17,142 +18,25 @@ state::state(multiverse &mtv) noexcept : m(mtv.clone())
 
 state::state(const pgnparser_ast::game &g)
 {
-    auto &metadata = g.headers;
-    // parse size
-    auto find_or_default = [](const std::map<std::string, std::string>& m, const std::string& key, const std::string& def) -> std::string {
-        auto it = m.find(key);
-        if (it != m.end()) {
-            return it->second;
-        } else {
-            return def;
-        }
-    };
-    std::string size_str = find_or_default(metadata, "size", "8x8");
-    int size_x, size_y;
-    auto pos = size_str.find('x');
-    if (pos == std::string::npos)
-        throw std::runtime_error("state(): Invalid board size format: " + size_str);
-    try {
-        size_x = std::stoi(size_str.substr(0, pos));
-        size_y = std::stoi(size_str.substr(pos + 1));
-        if(size_x <= 0 || size_y <= 0 || size_x > BOARD_LENGTH || size_y > BOARD_LENGTH)
-        {
-            throw std::out_of_range("");
-        }
-    } catch (const std::invalid_argument&) {
-        throw std::runtime_error("state(): Expect number in size value: " + size_str);
-    } catch (const std::out_of_range&) {
-        throw std::runtime_error("state(): Number out of range in size value: " + size_str + " (max board size allowed: " + std::to_string(BOARD_LENGTH) + ")");
-    }
-    // parse board
-    using board_t = std::vector<std::tuple<std::string, pgnparser_ast::token_t, int, int, bool>>;
-    board_t boards = g.boards;
-    std::optional<bool> is_even_timelines;
-    auto it = metadata.find("board");
-    if(it != metadata.end())
-    {
-        std::string board_str = it->second;
-        // none of the default variants should be named as "Custom[...]"
-        const static std::map<std::string, std::tuple<bool, int, int, board_t>> default_variants = {
-            {
-                "Standard",
-                {
-                    false, // Odd timelines
-                    8,8,
-                    {
-                        std::make_tuple("r*nbqk*bnr*/p*p*p*p*p*p*p*p*/8/8/8/8/P*P*P*P*P*P*P*P*/R*NBQK*BNR*", pgnparser_ast::NIL, 0, 1, false)
-                    }
-                }
-            },
-            {
-                "Standard - Turn Zero",
-                {
-                    false, // Odd timelines
-                    8,8,
-                    {
-                        std::make_tuple("r*nbqk*bnr*/p*p*p*p*p*p*p*p*/8/8/8/8/P*P*P*P*P*P*P*P*/R*NBQK*BNR*", pgnparser_ast::NIL, 0, 0, true),
-                        std::make_tuple("r*nbqk*bnr*/p*p*p*p*p*p*p*p*/8/8/8/8/P*P*P*P*P*P*P*P*/R*NBQK*BNR*", pgnparser_ast::NIL, 0, 1, false),
-                    }
-                }
-            },
-            {
-                "Very Small - Open",
-                {
-                    false, // Odd timelines
-                    4,4,
-                    {
-                        std::make_tuple("nbrk/3p*/P*3/KRBN", pgnparser_ast::NIL, 0, 1, false),
-                    }
-                }
-            },
-        };
-        
-        // Custom variant, can specify even/odd timelines here
-        if(board_str == "Custom - Even" || board_str == "Even")
-        {
-            is_even_timelines = true;
-        }
-        else if(board_str == "Custom - Odd" || board_str == "Odd")
-        {
-            is_even_timelines = false;
-        }
-        else if(board_str.starts_with("Custom"))
-        {
-            // do nothing
-        }
-        else if(boards.empty())
-        {
-            // if g.board is not empty, any description in "Board" header is ignored
-            try {
-                bool even;
-                std::tie(even, size_x, size_y, boards) = default_variants.at(board_str);
-                is_even_timelines = even;
-            } catch (const std::out_of_range&) {
-                throw std::runtime_error("state(): Unknown variant: " + board_str);
-            }
-        }
-    }
-    if(boards.empty())
-    {
-        throw std::runtime_error("state(): Variant is unspecific: no Board header or 5DFEN given");
-    }
-    if(!is_even_timelines.has_value())
-    {
-        bool even = false;
-        for(const auto& [fen, sign, l, t, c] : boards)
-        {
-            even |= (sign == pgnparser_ast::POSITIVE && l == 0);
-            even |= (sign == pgnparser_ast::NEGATIVE && l == 0);
-            if(even) break;
-        }
-        is_even_timelines = even;
-    }
-    // construct multiverse
-    std::vector<boards_info_t> boards_info(boards.size());
-    if(*is_even_timelines)
-    {
-        std::transform(boards.begin(), boards.end(), boards_info.begin(), [](const auto& tup) {
-            const auto& [fen, sign, l, t, c] = tup;
-            int signed_l = sign == pgnparser_ast::NEGATIVE ? ~l : l;
-            return std::make_tuple(signed_l, t, c, fen);
-        });
-        m = std::make_unique<multiverse_even>(boards_info, size_x, size_y);
-    }
-    else
-    {
-        std::transform(boards.begin(), boards.end(), boards_info.begin(), [](const auto& tup) {
-            const auto& [fen, sign, l, t, c] = tup;
-            int sgn = sign == pgnparser_ast::NEGATIVE ? -1 : 1;
-            return std::make_tuple(l*sgn, t, c, fen);
-        });
-        m = std::make_unique<multiverse_odd>(boards_info, size_x, size_y);
-    }
+    auto variant_setup = derive_variant_setup(g);
+    m = create_multiverse_from_variant_setup(variant_setup);
     std::tie(present, player) = m->get_present();
     // parse moves
     const pgnparser_ast::gametree *gt = &g.gt;
-    while(!gt->variations.empty())
+    while(true)
     {
-        const auto &[act, last_gt] = *(gt->variations.end() - 1);
+        if(!std::holds_alternative<pgnparser_ast::gametree::variations_t>(gt->variations_or_outcome))
+        {
+            // pgnparser_ast::token_t outcome = std::get<pgnparser_ast::token_t>(gt->variations_or_outcome);
+            // (void)outcome;
+            break;
+        }
+
+        const auto &variations = std::get<pgnparser_ast::gametree::variations_t>(gt->variations_or_outcome);
+        if(variations.empty())
+            break;
+
+        const auto &[act, last_gt] = *(variations.end() - 1);
         //std::cout << act;
         for(const auto& mv: act.moves)
         {
@@ -196,23 +80,33 @@ state::state(const pgnparser_ast::game &g)
                 }
             }
         }
-        if(!last_gt->variations.empty())
+        if(std::holds_alternative<pgnparser_ast::gametree::variations_t>(last_gt->variations_or_outcome))
         {
-            bool flag = submit();
-            if(!flag)
+            const auto &last_variations = std::get<pgnparser_ast::gametree::variations_t>(last_gt->variations_or_outcome);
+            if(!last_variations.empty())
             {
-                std::ostringstream oss;
-                oss << "state(): Cannot submit after parsing these moves: " << act;
-                throw std::runtime_error(oss.str());
+                bool flag = submit();
+                if(!flag)
+                {
+                    std::ostringstream oss;
+                    oss << "state(): Cannot submit after parsing these moves: " << act;
+                    throw std::runtime_error(oss.str());
+                }
+            }
+            else
+            {
+                bool flag = submit();
+                if(!flag)
+                {
+                    std::cerr << "[WARNING]state(): Cannot submit after parsing these moves: " << act;
+                }
             }
         }
         else
         {
-            bool flag = submit();
-            if(!flag)
-            {
-                std::cerr << "[WARNING]state(): Cannot submit after parsing these moves: " << act;
-            }
+            pgnparser_ast::token_t outcome = std::get<pgnparser_ast::token_t>(last_gt->variations_or_outcome);
+            (void)outcome;
+            // TODO: Handle game outcome token when checking continuation state.
         }
         gt = last_gt.get();
     }
@@ -281,6 +175,16 @@ bool state::apply_move(full_move fm, piece_t promote_to)
     vec4 p = fm.from;
     vec4 q = fm.to;
     vec4 d = q - p;
+
+    // pass move
+    if (q == vec4(0, 0, 0, 0)) {
+		// mark it has beed passed
+		const std::shared_ptr<board>& b_ptr = m->get_board(p.l(), p.t(), player);
+		b_ptr->contact() |=  (uint64_t)1;
+		//b_ptr->contact() &=  ~(uint64_t)1; clean bit
+        return true;
+    }
+
     if constexpr (!UNSAFE)
     {
 #ifndef NDEBUG
@@ -318,22 +222,23 @@ bool state::apply_move(full_move fm, piece_t promote_to)
         const std::shared_ptr<board>& b_ptr = m->get_board(p.l(), p.t(), player);
         bitboard_t z = pmask(p.xy());
         const auto &[size_x, size_y] = m->get_board_size();
+        std::shared_ptr<board> new_board;
         // en passant
         if((b_ptr->lpawn()&z) && d.x()!=0 && b_ptr->get_piece(q.xy()) == NO_PIECE)
         {
             dprint(" ... en passant");
-            m->append_board(p.l(), b_ptr
-                            ->replace_piece(ppos(q.x(),p.y()), NO_PIECE)
-                            ->move_piece(p.xy(), q.xy()));
+            new_board = b_ptr->replace_piece(ppos(q.x(), p.y()), NO_PIECE)
+                ->move_piece(p.xy(), q.xy());
+            m->append_board(p.l(), new_board);
         }
         // promotion
         else if((b_ptr->lpawn()&z) && (q.y() == 0 || q.y() == size_y - 1))
         {
             dprint(" ... promotion");
             piece_t promoted = player ? to_black(promote_to) : promote_to;
-            m->append_board(p.l(), b_ptr
-                            ->replace_piece(p.xy(), NO_PIECE)
-                            ->replace_piece(q.xy(), promoted));
+            new_board = b_ptr->replace_piece(p.xy(), NO_PIECE)
+                ->replace_piece(q.xy(), promoted);
+            m->append_board(p.l(), new_board);
         }
         // castling
         else if((b_ptr->king()&z) && abs(d.x()) > 1)
@@ -341,66 +246,86 @@ bool state::apply_move(full_move fm, piece_t promote_to)
             dprint(" ... castling");
             int rook_x1 = d.x() < 0 ? 0 : (size_x - 1); //rook's original x coordinate
             int rook_x2 = q.x() + (d.x() < 0 ? 1 : -1); //rook's new x coordinate
-            m->append_board(p.l(),b_ptr
-                            ->move_piece(ppos(rook_x1, p.y()), ppos(rook_x2,q.y()))
-                            ->move_piece(p.xy(), q.xy()));
+            new_board = b_ptr->move_piece(ppos(rook_x1, p.y()), ppos(rook_x2, q.y()))
+                ->move_piece(p.xy(), q.xy());
+            m->append_board(p.l(), new_board);
         }
         // normal move
         else
         {
             dprint(" ... normal move/capture");
-            m->append_board(p.l(), b_ptr->move_piece(p.xy(), q.xy()));
+            new_board = b_ptr->move_piece(p.xy(), q.xy());
+            m->append_board(p.l(), new_board);
         }
+
+        new_board->contact() = (static_cast<uint64_t>(p.l()) & 0xFF) << 8;
     }
     // non-branching superphysical move
     else if (std::make_pair(q.t(), player) == m->get_timeline_end(q.l()))
     {
         const std::shared_ptr<board>& b_ptr = m->get_board(p.l(), p.t(), player);
         const piece_t& pic = static_cast<piece_t>(piece_name(b_ptr->get_piece(p.xy())));
-        m->append_board(p.l(), b_ptr->replace_piece(p.xy(), NO_PIECE));
+        std::shared_ptr<board> new_board_from = b_ptr->replace_piece(p.xy(), NO_PIECE);
+        m->append_board(p.l(), new_board_from);
         
         bitboard_t z = pmask(p.xy());
         const auto &[size_x, size_y] = m->get_board_size();
         const std::shared_ptr<board>& c_ptr = m->get_board(q.l(), q.t(), player);
+        std::shared_ptr<board> new_board_to;
         
         // promotion (only brawns can do)
         if ((b_ptr->lrawn()&z) && (q.y() == 0 || q.y() == size_y - 1))
         {
             dprint(" ... nonbranching brawn promotion");
             piece_t promoted = player ? to_black(promote_to) : promote_to;
-            m->append_board(q.l(), c_ptr->replace_piece(q.xy(), promoted));
+            new_board_to = c_ptr->replace_piece(q.xy(), promoted);
+            m->append_board(q.l(), new_board_to);
         }
         // normal non_branching move
         else
         {
             dprint(" ... nonbranching jump");
-            m->append_board(q.l(), c_ptr->replace_piece(q.xy(), pic));
+            new_board_to = c_ptr->replace_piece(q.xy(), pic);
+            m->append_board(q.l(), new_board_to);
         }
+        new_board_from->contact() = (static_cast<uint64_t>(p.l()) & 0xFF) << 8;
+		new_board_from->contact() |= (static_cast<uint64_t>(q.l()) & 0xFF) << 24;
+        new_board_from->contact() |= (static_cast<uint64_t>(q.t() + player) & 0xFF) << 16;
+		
+        new_board_to->contact() = (static_cast<uint64_t>(q.l()) & 0xFF) << 8;
+        new_board_to->contact() |= (static_cast<uint64_t>(p.l()) & 0xFF) << 24;
+        new_board_to->contact() |= (static_cast<uint64_t>(p.t() + player) & 0xFF) << 16;
+
     }
     //branching move
     else
     {
         const std::shared_ptr<board>& b_ptr = m->get_board(p.l(), p.t(), player);
         const piece_t& pic = static_cast<piece_t>(piece_name(b_ptr->get_piece(p.xy())));
-        m->append_board(p.l(), b_ptr->replace_piece(p.xy(), NO_PIECE));
+        std::shared_ptr<board> new_board_from = b_ptr->replace_piece(p.xy(), NO_PIECE);
+        m->append_board(p.l(), new_board_from);
         const std::shared_ptr<board>& x_ptr = m->get_board(q.l(), q.t(), player);
         auto [t, c] = next_turn({q.t(), player});
         
         bitboard_t z = pmask(p.xy());
         const auto &[size_x, size_y] = m->get_board_size();
+        std::shared_ptr<board> new_board_to;
+        int new_l_to;
         
         // promotion (only brawns can do)
         if ((b_ptr->lrawn()&z) && (q.y() == 0 || q.y() == size_y - 1))
         {
             dprint(" ... branching brawn promotion");
             piece_t promoted = player ? to_black(promote_to) : promote_to;
-            m->insert_board(new_line(), t, c, x_ptr->replace_piece(q.xy(), promoted));
+            new_board_to = x_ptr->replace_piece(q.xy(), promoted);
+            m->insert_board(new_l_to = new_line(), t, c, new_board_to);
         }
         // normal non_branching move
         else
         {
             dprint(" ... branching jump");
-            m->insert_board(new_line(), t, c, x_ptr->replace_piece(q.xy(), pic));
+            new_board_to = x_ptr->replace_piece(q.xy(), pic);
+            m->insert_board(new_l_to = new_line(), t, c, new_board_to);
         }
         auto [new_present, _] = m->get_present();
         if(new_present < present)
@@ -408,6 +333,14 @@ bool state::apply_move(full_move fm, piece_t promote_to)
             // if a historical board is activated by this travel, go back
             present = new_present;
         }
+
+        new_board_from->contact() = (static_cast<uint64_t>(p.l()) & 0xFF) << 8;
+		new_board_from->contact() |= (static_cast<uint64_t>(new_l_to) & 0xFF) << 24;
+        new_board_from->contact() |= (static_cast<uint64_t>(q.t() + player) & 0xFF) << 16;
+		
+        new_board_to->contact() = (static_cast<uint64_t>(q.l()) & 0xFF) << 8;
+        new_board_to->contact() |= (static_cast<uint64_t>(p.l()) & 0xFF) << 24;
+        new_board_to->contact() |= (static_cast<uint64_t>(p.t() + player) & 0xFF) << 16;
     }
     return true;
 }
@@ -474,6 +407,12 @@ state::move_info state::get_move_info(full_move fm, piece_t pt) const
          If some move logic needs to be changed here, make sure also perform change
          in HC_info::build_HC()
          */
+        // pass move
+        if (q == vec4(0, 0, 0, 0)) {
+            dprint(" ... pass move");
+            new_pos = p;
+            checking_opponent = find_board_check(s, p.l());
+        } else 
         // physical move, no time travel
         if(d.l() == 0 && d.t() == 0)
         {
@@ -630,6 +569,7 @@ generator<full_move> state::find_checks_impl(std::vector<int> lines) const
                         {
                             vec4 q = vec4(dst_pos, q0);
                             dprint("found check", full_move(p,q), "source:", p);
+							//if (!outofrange(p, q, C))
                             co_yield full_move(p, q);
                         }
                     }
@@ -679,7 +619,23 @@ std::vector<vec4> state::gen_movable_pieces_impl(std::vector<int> lines) const
             // generate the aviliable moves
             auto moves = m->gen_moves<C>(p);
             // for each destination board and bit location
-            if(auto info = moves.first())
+			bool found = false;
+			for (const auto& [r, bb] : moves)
+			{
+				for(int pos : marked_pos(bb))
+				{
+					vec4 q = vec4(pos, r);
+					if (!m->outofrange(p, q, C)) 
+					{
+						found = true;
+						break;
+					}
+				}
+				if (found) {
+					break;
+				}
+			}
+            if(found)
             {
                 result.push_back(p);
             }
@@ -980,3 +936,183 @@ template generator<full_move> state::find_checks_impl<false>(std::vector<int>) c
 template generator<full_move> state::find_checks_impl<true>(std::vector<int>) const;
 template std::vector<vec4> state::gen_movable_pieces_impl<false>(std::vector<int>) const;
 template std::vector<vec4> state::gen_movable_pieces_impl<true>(std::vector<int>) const;
+
+match_status_t state::get_match_status(std::function<void()> cb) const
+{
+    auto [w, ss] = HC_info::build_HC(*this);
+    if (w.search(ss, cb).first().has_value())
+    {
+        return match_status_t::PLAYING;
+    }
+    auto [t, c] = this->get_present();
+    if (this->phantom().find_checks(!c).first().has_value())
+    {
+        return c ? match_status_t::WHITE_WINS : match_status_t::BLACK_WINS;
+    }
+    else
+    {
+        return match_status_t::STALEMATE;
+    }
+}
+
+template <bool COLOR> bool state::process_been_checked_boards(std::vector<std::pair<int,std::vector<uint64_t>>> &operable_boards) const
+{
+     constexpr static auto u_to_l = [](int u) -> int {
+         return (u & 1) ? ~(u >> 1) : (u >> 1);
+     };
+
+     constexpr static auto v_to_tc = [](int v) -> std::pair<int, bool> {
+         return {v >> 1, static_cast<bool>(v & 1)};
+     };
+	 
+	if (operable_boards.empty()) {
+		auto [all_boards2, operable_boards2, boards_edges2] = m->get_observation_information<COLOR>();
+		operable_boards = operable_boards2;
+	}
+	bool has_empty_move_board = false;
+	for (auto& outer_pair : operable_boards) {
+		for (uint64_t& moveid : outer_pair.second) {
+			
+			int u0 = static_cast<int>((moveid >> 44) & 0xFF);
+			int v0 = static_cast<int>((moveid >> 36) & 0xFF);
+			int y0 = static_cast<int>((moveid >> 33) & 0x7);
+			int x0 = static_cast<int>((moveid >> 30) & 0x7);
+
+			int u1 = static_cast<int>((moveid >> 22) & 0xFF);
+			int v1 = static_cast<int>((moveid >> 14) & 0xFF);
+			int y1 = static_cast<int>((moveid >> 11) & 0x7);
+			int x1 = static_cast<int>((moveid >> 8) & 0x7);
+
+			int promotion = static_cast<int>((moveid >> 4) & 0xF);
+			int flags = static_cast<int>((moveid >> 0) & 0xF);
+			if (!(flags & 1)) {
+			    std::cout << "Here, find ivnaild move2 !!" << std::endl;
+				continue;
+			}
+
+			// make the move-data
+			full_move fm(vec4(x0, y0, v_to_tc(v0).first, u_to_l(u0)), vec4(x1, y1, v_to_tc(v1).first, u_to_l(u1)));
+			piece_t pt((piece_t)("QNRB"[promotion]));
+			// cannnot give ckecks
+			std::optional<state> new_state_opt = can_apply(fm, pt);
+			assert(new_state_opt && "failed to apply move here2!");
+			if(new_state_opt->find_checks(!COLOR).first()){
+				moveid &= ~(1ULL << 0);
+				//std::cout << "~~been check, mask it:\n" << to_string()
+				// << fm.to_string() << "\n" << new_state_opt->to_string()<< std::endl;
+				continue;
+			}
+		}
+		outer_pair.second.erase(
+          remove_if(outer_pair.second.begin(), outer_pair.second.end(), [](uint64_t x){return !(x & 1ULL);}),
+          outer_pair.second.end());
+		if (outer_pair.second.empty()) {
+			has_empty_move_board = true;
+		}
+	}
+	
+    return has_empty_move_board;
+}
+
+template <bool COLOR>
+std::tuple<std::vector<std::pair<int, std::vector<uint64_t>>>,
+    std::vector<std::pair<int, std::vector<uint64_t>>>,
+    std::vector<std::pair<int, int>>> state::get_observation_information() const
+{
+	//std::vector<std::pair<int,int>> boards_edges;
+	//std::vector<std::pair<int,std::vector<uint64_t>>> all_boards;
+	//std::vector<std::pair<int,std::vector<uint64_t>>> operable_boards;
+	
+     constexpr static auto u_to_l = [](int u) -> int {
+         return (u & 1) ? ~(u >> 1) : (u >> 1);
+     };
+
+     constexpr static auto v_to_tc = [](int v) -> std::pair<int, bool> {
+         return {v >> 1, static_cast<bool>(v & 1)};
+     };
+	
+	auto [all_boards, operable_boards, boards_edges] = m->get_observation_information<COLOR>();
+	bool has_empty_move_board = process_been_checked_boards<COLOR>(operable_boards);
+	if (has_empty_move_board) {
+		for (auto& outer_pair : operable_boards) {
+			for (uint64_t& moveid : outer_pair.second) {
+				
+				int u0 = static_cast<int>((moveid >> 44) & 0xFF);
+				int v0 = static_cast<int>((moveid >> 36) & 0xFF);
+				int y0 = static_cast<int>((moveid >> 33) & 0x7);
+				int x0 = static_cast<int>((moveid >> 30) & 0x7);
+
+				int u1 = static_cast<int>((moveid >> 22) & 0xFF);
+				int v1 = static_cast<int>((moveid >> 14) & 0xFF);
+				int y1 = static_cast<int>((moveid >> 11) & 0x7);
+				int x1 = static_cast<int>((moveid >> 8) & 0x7);
+
+				int promotion = static_cast<int>((moveid >> 4) & 0xF);
+				int flags = static_cast<int>((moveid >> 0) & 0xF);
+				if (!(flags & 1)) {
+					std::cout << "Here, find ivnaild move !!" << std::endl;
+					continue;
+				}
+
+				// make the move-data
+				full_move fm(vec4(x0, y0, v_to_tc(v0).first, u_to_l(u0)), vec4(x1, y1, v_to_tc(v1).first, u_to_l(u1)));
+				piece_t pt((piece_t)("QNRB"[promotion]));
+
+				// cannnot give empty move board
+				std::optional<state> new_state_opt = can_apply(fm, pt);
+				assert(new_state_opt && "failed to apply move here!");
+				std::vector<std::pair<int,std::vector<uint64_t>>> operable_boards2{};
+				if(new_state_opt->process_been_checked_boards<COLOR>(operable_boards2)){
+					moveid &= ~(1ULL << 0);
+					//std::cout << "~~been check, mask it:\n" << to_string()
+					// << fm.to_string() << "\n" << new_state_opt->to_string()<< std::endl;
+					continue;
+				}
+			}
+			outer_pair.second.erase(
+			  remove_if(outer_pair.second.begin(), outer_pair.second.end(), [](uint64_t x){return !(x & 1ULL);}),
+			  outer_pair.second.end());
+		}
+	}
+	
+	for (auto& outer_pair : operable_boards) {
+		for (uint64_t& moveid : outer_pair.second) {
+			
+			int u0 = static_cast<int>((moveid >> 44) & 0xFF);
+			int v0 = static_cast<int>((moveid >> 36) & 0xFF);
+			int y0 = static_cast<int>((moveid >> 33) & 0x7);
+			int x0 = static_cast<int>((moveid >> 30) & 0x7);
+
+			int u1 = static_cast<int>((moveid >> 22) & 0xFF);
+			int v1 = static_cast<int>((moveid >> 14) & 0xFF);
+			int y1 = static_cast<int>((moveid >> 11) & 0x7);
+			int x1 = static_cast<int>((moveid >> 8) & 0x7);
+
+			int promotion = static_cast<int>((moveid >> 4) & 0xF);
+			int flags = static_cast<int>((moveid >> 0) & 0xF);
+			if (!(flags & 1)) {
+				std::cout << "Here, find ivnaild move3 !!" << std::endl;
+				continue;
+			}
+
+			// make the move-data
+			full_move fm(vec4(x0, y0, v_to_tc(v0).first, u_to_l(u0)), vec4(x1, y1, v_to_tc(v1).first, u_to_l(u1)));
+			piece_t pt((piece_t)("QNRB"[promotion]));
+
+			// added checking information
+			if(get_move_info(fm, pt).checking_opponent) {
+				moveid |= 1ULL << 3;
+			}
+		}
+		outer_pair.second.erase(
+		  remove_if(outer_pair.second.begin(), outer_pair.second.end(), [](uint64_t x){return !(x & 1ULL);}),
+		  outer_pair.second.end());
+	}
+	
+    return std::make_tuple(all_boards, operable_boards, boards_edges);
+}
+template bool state::process_been_checked_boards<true>(std::vector<std::pair<int,std::vector<uint64_t>>> &) const;
+template bool state::process_been_checked_boards<false>(std::vector<std::pair<int,std::vector<uint64_t>>> &) const;
+template std::tuple<std::vector<std::pair<int, std::vector<uint64_t>>>, std::vector<std::pair<int, std::vector<uint64_t>>>, std::vector<std::pair<int, int>>> state::get_observation_information<true>() const;
+template std::tuple<std::vector<std::pair<int, std::vector<uint64_t>>>, std::vector<std::pair<int, std::vector<uint64_t>>>, std::vector<std::pair<int, int>>> state::get_observation_information<false>() const;
+

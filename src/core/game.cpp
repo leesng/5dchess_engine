@@ -6,8 +6,10 @@
 #include <cassert>
 #include <optional>
 #include <variant>
+#include <array>
 #include "pgnparser.h"
 #include "hypercuboid.h"
+#include "variants.h"
 
 
 std::string show_comments(std::vector<std::string> const& comments)
@@ -35,72 +37,85 @@ game game::from_pgn(std::string input)
     auto ag = pgnparser(input).parse_game();
     if(!ag.has_value())
         throw std::runtime_error("Bad input, parse failed");
-    pgnparser_ast::gametree gt_ast = std::move(ag->gt);
-    ag->gt = {};
-    game g(gnode<comments_t>::create_root(state(*ag), ag->comments));
+    pgnparser_ast::gametree &gt_ast = ag->gt;
+    variant_setup_t variant_setup = derive_variant_setup(*ag);
+    std::unique_ptr<multiverse> m = create_multiverse_from_variant_setup(variant_setup);
+    game g(gnode<comments_t>::create_root(state(*m), ag->comments));
     g.metadata = ag->headers;
+    g.metadata["timeline"] = variant_setup.is_even_timelines ? "even" : "odd";
+    g.metadata["size"] = std::to_string(variant_setup.size_x) + "x" + std::to_string(variant_setup.size_y);
     gnode<comments_t> *cn = nullptr;
     // parse moves
     std::function<void(gnode<comments_t>*, const pgnparser_ast::gametree&)> dfs;
     dfs = [&dfs, &cn](gnode<comments_t>* node, const pgnparser_ast::gametree& gt_ast) -> void {
-        for(const auto& [act_ast, child_gt] : gt_ast.variations)
+        if(std::holds_alternative<pgnparser_ast::gametree::variations_t>(gt_ast.variations_or_outcome))
         {
-            state s = node->get_state();
-            std::vector<ext_move> moves;
-            for(const auto& mv_ast: act_ast.moves)
+            const auto& variations = std::get<pgnparser_ast::gametree::variations_t>(gt_ast.variations_or_outcome);
+            for(const auto& [act_ast, child_gt] : variations)
             {
-                auto [fm_opt, pt_opt, candidates] = s.parse_move(mv_ast);
-                if(!fm_opt.has_value())
+                state s = node->get_state();
+                std::vector<ext_move> moves;
+                for(const auto& mv_ast: act_ast.moves)
                 {
-                    if(candidates.empty())
+                    auto [fm_opt, pt_opt, candidates] = s.parse_move(mv_ast);
+                    if(!fm_opt.has_value())
                     {
-                        std::ostringstream oss;
-                        oss << "state(): Invalid move: " << mv_ast;
-                        
-                        throw std::runtime_error(oss.str());
+                        if(candidates.empty())
+                        {
+                            std::ostringstream oss;
+                            oss << "state(): Invalid move: " << mv_ast;
+                            
+                            throw std::runtime_error(oss.str());
+                        }
+                        else
+                        {
+                            std::ostringstream oss;
+                            oss << "state(): Ambiguous move: " << mv_ast << "; candidates: ";
+                            oss << range_to_string(candidates, "", "");
+                            throw std::runtime_error(oss.str());
+                        }
                     }
                     else
                     {
-                        std::ostringstream oss;
-                        oss << "state(): Ambiguous move: " << mv_ast << "; candidates: ";
-                        oss << range_to_string(candidates, "", "");
-                        throw std::runtime_error(oss.str());
+                        full_move fm = fm_opt.value();
+                        bool flag;
+                        if(pt_opt.has_value())
+                        {
+                            flag = s.apply_move<false>(fm, *pt_opt);
+                        }
+                        else
+                        {
+                            flag = s.apply_move<false>(fm);
+                        }
+                        if(!flag)
+                        {
+                            std::ostringstream oss;
+                            oss << "state(): Illegal move: " << mv_ast << " (parsed as: " << fm << ")";
+                            throw std::runtime_error(oss.str());
+                        }
+                        moves.push_back(ext_move(fm, pt_opt.has_value() ? *pt_opt : QUEEN_W));
                     }
                 }
-                else
+                bool flag = s.submit();
+                if(!flag)
                 {
-                    full_move fm = fm_opt.value();
-                    bool flag;
-                    if(pt_opt.has_value())
-                    {
-                        flag = s.apply_move<false>(fm, *pt_opt);
-                    }
-                    else
-                    {
-                        flag = s.apply_move<false>(fm);
-                    }
-                    if(!flag)
-                    {
-                        std::ostringstream oss;
-                        oss << "state(): Illegal move: " << mv_ast << " (parsed as: " << fm << ")";
-                        throw std::runtime_error(oss.str());
-                    }
-                    moves.push_back(ext_move(fm, pt_opt.has_value() ? *pt_opt : QUEEN_W));
+                    std::ostringstream oss;
+                    oss << "state(): Cannot submit after parsing these moves: " << act_ast;
+                    throw std::runtime_error(oss.str());
                 }
+                action act = action::from_vector(moves, node->get_state());
+                std::unique_ptr<gnode<comments_t>> child_node = gnode<comments_t>::create_child(node, s, act, act_ast.comments);
+                gnode<comments_t>* child_node_ptr = node->add_child(std::move(child_node));
+                cn = child_node_ptr;
+                dfs(child_node_ptr, *child_gt);
             }
-            bool flag = s.submit();
-            if(!flag)
-            {
-                std::ostringstream oss;
-                oss << "state(): Cannot submit after parsing these moves: " << act_ast;
-                throw std::runtime_error(oss.str());
-            }
-            action act = action::from_vector(moves, node->get_state());
-            std::unique_ptr<gnode<comments_t>> child_node = gnode<comments_t>::create_child(node, s, act, act_ast.comments);
-            gnode<comments_t>* child_node_ptr = node->add_child(std::move(child_node));
-            cn = child_node_ptr;
-            dfs(child_node_ptr, *child_gt);
         }
+        // else
+        // {
+        //     pgnparser_ast::token_t outcome = std::get<pgnparser_ast::token_t>(gt_ast.variations_or_outcome);
+        //     (void)outcome;
+        //     // TODO: Handle game outcome token when converting PGN AST to game tree nodes.
+        // }
     };
     
     dfs(g.gametree.get(), gt_ast);
@@ -149,6 +164,17 @@ std::vector<boards_info_t> game::get_current_boards() const
 {
     return get_current_state().get_boards();
 }
+
+std::vector<std::pair<int, int>> game::get_current_boards_edges() const
+{
+    const state& s = get_current_state();
+    auto [t, c] = s.get_present();
+    auto [all_boards, operable_boards, boards_edges] = c ? s.get_observation_information<true>()
+    : s.get_observation_information<false>();
+
+    return boards_edges;
+}
+
 
 std::pair<std::vector<boards_info_t>, std::vector<full_move>> game::get_phantom_boards_and_checks() const
 {
@@ -473,17 +499,72 @@ bool game::visit_child(action act, comments_t comments, std::optional<state> new
 std::string game::show_pgn(uint16_t show_flags)
 {
     std::ostringstream oss;
-    for(const auto &[k, v] : metadata)
+    constexpr static std::array<const char*, 9> ordered_keys = {
+        "event", "site", "date", "round", "white", "black", "variant", "timeline", "size"
+    };
+
+    for(const auto &k : ordered_keys)
     {
-        std::string key = k;
+        auto it = metadata.find(k);
+        if(it == metadata.end())
+        {
+            continue;
+        }
+        std::string key = it->first;
         if(!key.empty())
         {
             // Capitalize the first letter of the key
             key[0] = toupper(key[0]);
         }
+        oss << "[" << key << " \"" << it->second << "\"]\n";
+    }
+    for(const auto &[k, v] : metadata)
+    {
+        if(std::find(ordered_keys.begin(), ordered_keys.end(), k) != ordered_keys.end())
+        {
+            continue;
+        }
+        std::string key = k;
+        if(!key.empty())
+        {
+            key[0] = toupper(key[0]);
+        }
         oss << "[" << key << " \"" << v << "\"]\n";
     }
-    oss << gametree->get_state().show_fen() << "\n";
+    oss << gametree->get_state().show_fen();
     oss << gametree->to_string(show_comments, show_flags);
-    return oss.str();
+    oss << "\n";
+    /* indent by 1 space * number of nested parentheses
+    do not indent inside comments */
+    int parentheses_level = 0;
+    int curly_brace_level = 0;
+    std::string result;
+    for(char c : oss.str())
+    {
+        result += c;
+        if(c == '(')
+        {
+            parentheses_level++;
+        }
+        else if(c == ')')
+        {
+            parentheses_level--;
+        }
+        else if(c == '{')
+        {
+            curly_brace_level++;
+        }
+        else if(c == '}')
+        {
+            curly_brace_level--;
+        }
+        else
+        {
+            if(curly_brace_level == 0 && c == '\n')
+            {
+                result += std::string(parentheses_level, ' ');
+            }
+        }
+    }
+    return result;
 }

@@ -46,7 +46,10 @@ std::string full_move::to_string() const
     std::ostringstream os;
     vec4 p = from, q = to;
     vec4 d = q - p;
-    if(d.t() == 0 && d.l() == 0)
+	if (q == vec4(0, 0, 0, 0)) {
+		os << '(' << p.l() << 'T' << p.t() << ')' << "PASS";
+	}
+    else if(d.t() == 0 && d.l() == 0) 
     {
         os << '(' << p.l() << 'T' << p.t() << ')' << (char)(p.x()+'a') << (char)(p.y()+'1') << (char)(q.x()+'a') << (char)(q.y()+'1');
     }

@@ -154,6 +154,9 @@ worker.onmessage = (e) => {
         let options = msg.options.map(obj => obj.pgn);
         nextOptions = msg.options.map(obj => obj.action);
         UI.select.setOptions(options);
+        if (msg.selectedIndex !== undefined) {
+            UI.select.setSelectedIndex(msg.selectedIndex);
+        }
     }
     else if (msg.type === 'update_pgn')
     {
@@ -240,6 +243,10 @@ UI.setSettingsChangeCallback((settings) => {
         worker.postMessage({ type: 'view' });
     } else if (settings.autoToggleComments !== undefined) {
         // Auto toggle of the HUD comments area is handled entirely within UI.js
+    } else if (settings.flipped !== undefined) {
+        if (window.chessBoardCanvas) {
+            window.chessBoardCanvas.setFlipped(settings.flipped);
+        }
     }
 });
 
