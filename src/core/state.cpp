@@ -14,13 +14,16 @@
 state::state(multiverse &mtv) noexcept : m(mtv.clone())
 {
     std::tie(present, player) = m->get_present();
+	has_passed = false;
 }
 
-state::state(const pgnparser_ast::game &g)
+state::state(const pgnparser_ast::game &g, std::function<void(const state&, const ext_move&)> on_step)
 {
     auto variant_setup = derive_variant_setup(g);
     m = create_multiverse_from_variant_setup(variant_setup);
     std::tie(present, player) = m->get_present();
+	has_passed = false;
+
     // parse moves
     const pgnparser_ast::gametree *gt = &g.gt;
     while(true)
@@ -61,6 +64,7 @@ state::state(const pgnparser_ast::game &g)
             }
             else
             {
+                state current_state_before_move = *this;
                 full_move fm = fm_opt.value();
                 bool flag;
                 if(pt_opt.has_value())
@@ -77,6 +81,12 @@ state::state(const pgnparser_ast::game &g)
                     std::ostringstream oss;
                     oss << "state(): Illegal move: " << mv << " (parsed as: " << fm << ")";
                     throw std::runtime_error(oss.str());
+                }
+                if (on_step) {
+                    ext_move target_move = pt_opt.has_value()
+                        ? ext_move(fm, to_white(*pt_opt))
+                        : ext_move(fm);
+                    on_step(current_state_before_move, target_move);
                 }
             }
         }
@@ -172,21 +182,14 @@ template<bool UNSAFE>
 bool state::apply_move(full_move fm, piece_t promote_to)
 {
     dprint("applying move", fm);
-    vec4 p = fm.from;
-    vec4 q = fm.to;
-    vec4 d = q - p;
-
-    // pass move
-    if (q == vec4(0, 0, 0, 0)) {
-		// mark it has beed passed
-		const std::shared_ptr<board>& b_ptr = m->get_board(p.l(), p.t(), player);
-		b_ptr->contact() |=  (uint64_t)1;
-		//b_ptr->contact() &=  ~(uint64_t)1; clean bit
-        return true;
-    }
 
     if constexpr (!UNSAFE)
     {
+		vec4 p = fm.from;
+		vec4 q = fm.to;
+		vec4 d = q - p;
+	
+		if (q != vec4(0, 0, 0, 0)) {
 #ifndef NDEBUG
         auto te = m->get_timeline_end(p.l());
         assert(std::make_pair(p.t(), player) == te && "moves must be made on an active board");
@@ -210,8 +213,47 @@ bool state::apply_move(full_move fm, piece_t promote_to)
         {
             return false;
         }
+		}
     }
     
+    /* WARNING: similiar logic used in hypercuboid.cpp for applying semimoves
+     If some move logic needs to be changed here, make sure also perform change
+     in HC_info::build_HC()
+     */
+	/*{
+		auto [l_min, l_max] = m->get_lines_range();
+		auto [active_min, active_max] = m->get_active_range();
+		std::cout << "111l_min=" << l_min << ",l_max=" << l_max
+					<< ",active_min=" << active_min << ",active_max=" << active_max << std::endl;
+		for (int l = l_min; l <= l_max; l++) {
+			auto ts = m->get_timeline_start(l);
+			auto te = m->get_timeline_end(l);
+			std::cout << "u=" << l_to_u(l) << ",ts_v=" << tc_to_v(ts.first, ts.second)
+										   << ",te_v=" << tc_to_v(te.first, te.second) << std::endl;
+		}
+	}*/
+	apply_move_and_return_new_boards(fm, promote_to);
+
+    return true;
+}
+
+std::vector<std::pair<int,int>> state::apply_move_and_return_new_boards(full_move fm, piece_t promote_to)
+{
+	std::vector<std::pair<int,int>> new_boards;
+	
+    dprint("applying move", fm);
+    vec4 p = fm.from;
+    vec4 q = fm.to;
+    vec4 d = q - p;
+
+    // pass move
+    if (q == vec4(0, 0, 0, 0)) {
+		// mark it has beed passed
+		has_passed = true;
+
+        return new_boards;
+    }
+
     /* WARNING: similiar logic used in hypercuboid.cpp for applying semimoves
      If some move logic needs to be changed here, make sure also perform change
      in HC_info::build_HC()
@@ -259,6 +301,9 @@ bool state::apply_move(full_move fm, piece_t promote_to)
         }
 
         new_board->contact() = (static_cast<uint64_t>(p.l()) & 0xFF) << 8;
+		
+		new_boards.push_back(std::make_pair(l_to_u(p.l()), tc_to_v(p.t(), player)+1));
+
     }
     // non-branching superphysical move
     else if (std::make_pair(q.t(), player) == m->get_timeline_end(q.l()))
@@ -295,7 +340,10 @@ bool state::apply_move(full_move fm, piece_t promote_to)
         new_board_to->contact() = (static_cast<uint64_t>(q.l()) & 0xFF) << 8;
         new_board_to->contact() |= (static_cast<uint64_t>(p.l()) & 0xFF) << 24;
         new_board_to->contact() |= (static_cast<uint64_t>(p.t() + player) & 0xFF) << 16;
-
+		
+		new_boards.push_back(std::make_pair(l_to_u(p.l()), tc_to_v(p.t(), player)+1));
+		new_boards.push_back(std::make_pair(l_to_u(q.l()), tc_to_v(q.t(), player)+1));
+		
     }
     //branching move
     else
@@ -341,8 +389,35 @@ bool state::apply_move(full_move fm, piece_t promote_to)
         new_board_to->contact() = (static_cast<uint64_t>(q.l()) & 0xFF) << 8;
         new_board_to->contact() |= (static_cast<uint64_t>(p.l()) & 0xFF) << 24;
         new_board_to->contact() |= (static_cast<uint64_t>(p.t() + player) & 0xFF) << 16;
+		
+		new_boards.push_back(std::make_pair(l_to_u(p.l()), tc_to_v(p.t(), player)+1));
+		new_boards.push_back(std::make_pair(l_to_u(new_l_to), tc_to_v(q.t(), player)+1));
     }
-    return true;
+    return new_boards;
+}
+
+void state::unapply_move_by_new_boards(std::vector<std::pair<int,int>> new_boards)
+{
+    if (new_boards.empty())
+    {
+        // Undo pass move: reset the flag
+        has_passed = false;
+        return;
+    }
+
+    // Undo in reverse order (LIFO):
+    // remove newly created timelines first, then roll back the original timeline.
+    // This avoids transient invalid boundary states during the undo process.
+    for (auto it = new_boards.rbegin(); it != new_boards.rend(); ++it)
+    {
+        auto [u, v] = *it;
+        m->drop_board(u_to_l(u));
+    }
+
+    // Restore present timestamp.
+    // Branching moves may push present backward; recalculating via get_present()
+    // works correctly for physical, non-branching and branching moves alike.
+    present = m->get_present().first;
 }
 
 state::move_info state::get_move_info(full_move fm, piece_t pt) const
@@ -452,6 +527,8 @@ bool state::submit()
     }
     present = t;
     player  = c;
+	has_passed = false;
+	
     return true;
 }
 
@@ -649,9 +726,9 @@ state::mate_type state::get_mate_type() const
 {
     dprint("state::get_mate_type()");
     auto [w, ss] = HC_info::build_HC(*this);
-    auto hc = ss.hcs.back();
+    auto hc = ss.back();
     search_space ss1 {{hc}};
-    ss.hcs.pop_back();
+    ss.pop_back();
     // check if there is a non-branching move
     if(w.search(ss1).first())
     {
@@ -668,13 +745,13 @@ state::mate_type state::get_mate_type() const
     /* Build the search space `ss2` from `ss` so that
     1. On new lines that are active, erase all moves traveling back in time
     2. On other lines, do nothing */
-    for(HC &hc : ss2.hcs)
+    for(HC &hc : ss2)
     {
         //NOTE: because most axes are the same, the following code can be optimized
         int max_axis = std::min(w.new_axis+timeline_advantage+1, w.dimension-1);
         for(int n = w.new_axis; n <= max_axis; n++)
         {
-            hc.axes[n].erase_if([&w, n, old_t=present](int i){
+            hc[n].erase_if([&w, n, old_t=present](int i){
                 if(std::holds_alternative<arriving_move>(w.axis_coords[n][i]))
                 {
                     auto am = std::get<arriving_move>(w.axis_coords[n][i]);
@@ -937,182 +1014,97 @@ template generator<full_move> state::find_checks_impl<true>(std::vector<int>) co
 template std::vector<vec4> state::gen_movable_pieces_impl<false>(std::vector<int>) const;
 template std::vector<vec4> state::gen_movable_pieces_impl<true>(std::vector<int>) const;
 
-match_status_t state::get_match_status(std::function<bool(int64_t)> cb) const
-{
-    auto [w, ss] = HC_info::build_HC(*this);
-    if (w.search(ss, cb).first().has_value())
-    {
-        return match_status_t::PLAYING;
+bool state::big_round_over() const {
+    auto [l_min, l_max] = m->get_lines_range();
+    for (int l = l_min; l <= l_max; l++) {
+        auto te_tc = m->get_timeline_end(l);
+        if (te_tc.second != player) {
+            continue;
+        }
+		auto present_tc = m->get_present();
+		// cannot submit
+		if (present_tc.second == player) {
+			return false;
+		}
+		// can submit but should choose pass move
+		return has_passed;
+		
     }
-    auto [t, c] = this->get_present();
-    if (this->phantom().find_checks(!c).first().has_value())
-    {
-        return c ? match_status_t::WHITE_WINS : match_status_t::BLACK_WINS;
-    }
-    else
-    {
-        return match_status_t::STALEMATE;
-    }
+    return true;
 }
 
-template <bool COLOR> bool state::process_been_checked_boards(std::vector<std::pair<int,std::vector<uint64_t>>> &operable_boards) const
-{
-     constexpr static auto u_to_l = [](int u) -> int {
-         return (u & 1) ? ~(u >> 1) : (u >> 1);
-     };
+std::tuple<std::vector<std::pair<int,std::vector<uint64_t>>>, std::vector<std::pair<int,int>>> state::get_boards_and_edges() const{
+	return m->get_boards_and_edges();
+}
 
-     constexpr static auto v_to_tc = [](int v) -> std::pair<int, bool> {
-         return {v >> 1, static_cast<bool>(v & 1)};
-     };
-	 
-	if (operable_boards.empty()) {
-		auto [all_boards2, operable_boards2, boards_edges2] = m->get_observation_information<COLOR>();
-		operable_boards = operable_boards2;
-	}
-	bool has_empty_move_board = false;
-	for (auto& outer_pair : operable_boards) {
-		for (uint64_t& moveid : outer_pair.second) {
-			
-			int u0 = static_cast<int>((moveid >> 44) & 0xFF);
-			int v0 = static_cast<int>((moveid >> 36) & 0xFF);
-			int y0 = static_cast<int>((moveid >> 33) & 0x7);
-			int x0 = static_cast<int>((moveid >> 30) & 0x7);
+std::vector<std::pair<int,std::vector<uint64_t>>> state::get_operable_boards_moves_and_match_status(match_status_t &ms) const {	
 
-			int u1 = static_cast<int>((moveid >> 22) & 0xFF);
-			int v1 = static_cast<int>((moveid >> 14) & 0xFF);
-			int y1 = static_cast<int>((moveid >> 11) & 0x7);
-			int x1 = static_cast<int>((moveid >> 8) & 0x7);
-
-			int promotion = static_cast<int>((moveid >> 4) & 0xF);
-			int flags = static_cast<int>((moveid >> 0) & 0xF);
-			if (!(flags & 1)) {
-			    std::cout << "Here, find ivnaild move2 !!" << std::endl;
-				continue;
-			}
-
-			// make the move-data
-			full_move fm(vec4(x0, y0, v_to_tc(v0).first, u_to_l(u0)), vec4(x1, y1, v_to_tc(v1).first, u_to_l(u1)));
-			piece_t pt((piece_t)("QNRB"[promotion]));
-			// cannnot give ckecks
-			std::optional<state> new_state_opt = can_apply(fm, pt);
-			assert(new_state_opt && "failed to apply move here2!");
-			if(new_state_opt->find_checks(!COLOR).first()){
+    std::vector<std::pair<int,std::vector<uint64_t>>> operable_boards
+                = player ? m->get_operable_boards_moves<true>(!has_passed) : m->get_operable_boards_moves<false>(!has_passed);
+	bool being_checked = phantom().find_checks(!player).first().has_value();
+    /*for (auto& outer_pair : operable_boards) {
+		std::cout << "===[" <<outer_pair.first << "]:" << std::endl;
+        for (uint64_t& moveid : outer_pair.second) {
+			auto [u0, v0, y0, x0, u1, v1, y1, x1, pto, flags] = DecodeMoveId(moveid);
+            full_move fm(vec4(x0, y0, v_to_tc(v0).first, u_to_l(u0)), vec4(x1, y1, v_to_tc(v1).first, u_to_l(u1)));
+			std::cout << fm.to_string() << ",";
+		}
+		std::cout << std::endl;
+	}*/
+    for (auto& outer_pair : operable_boards) {
+        for (uint64_t& moveid : outer_pair.second) {
+            auto [u0, v0, y0, x0, u1, v1, y1, x1, pto, flags] = DecodeMoveId(moveid);
+            if (!(flags & 1)) {
+                continue;
+            }
+            
+            full_move fm(vec4(x0, y0, v_to_tc(v0).first, u_to_l(u0)), vec4(x1, y1, v_to_tc(v1).first, u_to_l(u1)));
+            piece_t pt((piece_t)("QNRB"[pto]));
+            std::optional<state> new_state_opt = can_apply(fm, pt);
+            //std::cout << std::endl <<  "<" << fm.to_string() << ">";
+            assert(new_state_opt && "failed to apply move here2!");
+            if (new_state_opt->find_checks(!player).first().has_value()) {
 				moveid &= ~(1ULL << 0);
-				//std::cout << "~~been check, mask it:\n" << to_string()
-				// << fm.to_string() << "\n" << new_state_opt->to_string()<< std::endl;
-				continue;
-			}
-		}
-		outer_pair.second.erase(
-          remove_if(outer_pair.second.begin(), outer_pair.second.end(), [](uint64_t x){return !(x & 1ULL);}),
-          outer_pair.second.end());
-		if (outer_pair.second.empty()) {
-			has_empty_move_board = true;
-		}
-	}
-	
-    return has_empty_move_board;
-}
-
-template <bool COLOR>
-std::tuple<std::vector<std::pair<int, std::vector<uint64_t>>>,
-    std::vector<std::pair<int, std::vector<uint64_t>>>,
-    std::vector<std::pair<int, int>>> state::get_observation_information() const
-{
-	//std::vector<std::pair<int,int>> boards_edges;
-	//std::vector<std::pair<int,std::vector<uint64_t>>> all_boards;
-	//std::vector<std::pair<int,std::vector<uint64_t>>> operable_boards;
-	
-     constexpr static auto u_to_l = [](int u) -> int {
-         return (u & 1) ? ~(u >> 1) : (u >> 1);
-     };
-
-     constexpr static auto v_to_tc = [](int v) -> std::pair<int, bool> {
-         return {v >> 1, static_cast<bool>(v & 1)};
-     };
-	
-	auto [all_boards, operable_boards, boards_edges] = m->get_observation_information<COLOR>();
-	bool has_empty_move_board = process_been_checked_boards<COLOR>(operable_boards);
-	if (has_empty_move_board) {
-		for (auto& outer_pair : operable_boards) {
-			for (uint64_t& moveid : outer_pair.second) {
-				
-				int u0 = static_cast<int>((moveid >> 44) & 0xFF);
-				int v0 = static_cast<int>((moveid >> 36) & 0xFF);
-				int y0 = static_cast<int>((moveid >> 33) & 0x7);
-				int x0 = static_cast<int>((moveid >> 30) & 0x7);
-
-				int u1 = static_cast<int>((moveid >> 22) & 0xFF);
-				int v1 = static_cast<int>((moveid >> 14) & 0xFF);
-				int y1 = static_cast<int>((moveid >> 11) & 0x7);
-				int x1 = static_cast<int>((moveid >> 8) & 0x7);
-
-				int promotion = static_cast<int>((moveid >> 4) & 0xF);
-				int flags = static_cast<int>((moveid >> 0) & 0xF);
-				if (!(flags & 1)) {
-					std::cout << "Here, find ivnaild move !!" << std::endl;
-					continue;
-				}
-
-				// make the move-data
-				full_move fm(vec4(x0, y0, v_to_tc(v0).first, u_to_l(u0)), vec4(x1, y1, v_to_tc(v1).first, u_to_l(u1)));
-				piece_t pt((piece_t)("QNRB"[promotion]));
-
-				// cannnot give empty move board
-				std::optional<state> new_state_opt = can_apply(fm, pt);
-				assert(new_state_opt && "failed to apply move here!");
-				std::vector<std::pair<int,std::vector<uint64_t>>> operable_boards2{};
-				if(new_state_opt->process_been_checked_boards<COLOR>(operable_boards2)){
-					moveid &= ~(1ULL << 0);
-					//std::cout << "~~been check, mask it:\n" << to_string()
-					// << fm.to_string() << "\n" << new_state_opt->to_string()<< std::endl;
-					continue;
-				}
-			}
-			outer_pair.second.erase(
-			  remove_if(outer_pair.second.begin(), outer_pair.second.end(), [](uint64_t x){return !(x & 1ULL);}),
-			  outer_pair.second.end());
-		}
-	}
-	
-	for (auto& outer_pair : operable_boards) {
-		for (uint64_t& moveid : outer_pair.second) {
+                continue;
+            }
 			
-			int u0 = static_cast<int>((moveid >> 44) & 0xFF);
-			int v0 = static_cast<int>((moveid >> 36) & 0xFF);
-			int y0 = static_cast<int>((moveid >> 33) & 0x7);
-			int x0 = static_cast<int>((moveid >> 30) & 0x7);
-
-			int u1 = static_cast<int>((moveid >> 22) & 0xFF);
-			int v1 = static_cast<int>((moveid >> 14) & 0xFF);
-			int y1 = static_cast<int>((moveid >> 11) & 0x7);
-			int x1 = static_cast<int>((moveid >> 8) & 0x7);
-
-			int promotion = static_cast<int>((moveid >> 4) & 0xF);
-			int flags = static_cast<int>((moveid >> 0) & 0xF);
-			if (!(flags & 1)) {
-				std::cout << "Here, find ivnaild move3 !!" << std::endl;
-				continue;
+			// added being_checked information
+			if(being_checked) {
+				moveid |= 1ULL << 4;
 			}
-
-			// make the move-data
-			full_move fm(vec4(x0, y0, v_to_tc(v0).first, u_to_l(u0)), vec4(x1, y1, v_to_tc(v1).first, u_to_l(u1)));
-			piece_t pt((piece_t)("QNRB"[promotion]));
-
 			// added checking information
 			if(get_move_info(fm, pt).checking_opponent) {
 				moveid |= 1ULL << 3;
 			}
-		}
+        }
 		outer_pair.second.erase(
 		  remove_if(outer_pair.second.begin(), outer_pair.second.end(), [](uint64_t x){return !(x & 1ULL);}),
 		  outer_pair.second.end());
+    }
+    /*for (auto& outer_pair : operable_boards) {
+		std::cout << "~~~[" <<outer_pair.first << "]:" << std::endl;
+        for (uint64_t& moveid : outer_pair.second) {
+			auto [u0, v0, y0, x0, u1, v1, y1, x1, pto, flags] = DecodeMoveId(moveid);
+            full_move fm(vec4(x0, y0, v_to_tc(v0).first, u_to_l(u0)), vec4(x1, y1, v_to_tc(v1).first, u_to_l(u1)));
+			std::cout << fm.to_string() << ",";
+		}
+		std::cout << std::endl;
+	}*/
+	operable_boards.erase(
+		std::remove_if(operable_boards.begin(), operable_boards.end(), [](const std::pair<int, std::vector<uint64_t>> &p) {return (p.second.empty());}),
+		operable_boards.end());
+	// get match status
+	if (!operable_boards.empty()) {
+		ms = match_status_t::PLAYING;
+	} else {
+		if (being_checked /*phantom().find_checks(!player).first().has_value()*/) {
+			ms = player ? match_status_t::WHITE_WINS : match_status_t::BLACK_WINS;
+		} else {
+			ms = match_status_t::STALEMATE;
+		}
 	}
 	
-    return std::make_tuple(all_boards, operable_boards, boards_edges);
+    return operable_boards;
 }
-template bool state::process_been_checked_boards<true>(std::vector<std::pair<int,std::vector<uint64_t>>> &) const;
-template bool state::process_been_checked_boards<false>(std::vector<std::pair<int,std::vector<uint64_t>>> &) const;
-template std::tuple<std::vector<std::pair<int, std::vector<uint64_t>>>, std::vector<std::pair<int, std::vector<uint64_t>>>, std::vector<std::pair<int, int>>> state::get_observation_information<true>() const;
-template std::tuple<std::vector<std::pair<int, std::vector<uint64_t>>>, std::vector<std::pair<int, std::vector<uint64_t>>>, std::vector<std::pair<int, int>>> state::get_observation_information<false>() const;
 
+	

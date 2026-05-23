@@ -98,10 +98,9 @@ public:
     
     template<bool SHOW_UMOVE=false>
     std::vector<boards_info_t> get_boards() const;
-    std::vector<std::shared_ptr<board>> get_newboard_by_move(vec4 p, vec4 q, bool player, piece_t promote_to = QUEEN_W) const;
-	template <bool COLOR> std::tuple<std::vector<std::pair<int,std::vector<uint64_t>>>,
-           std::vector<std::pair<int,std::vector<uint64_t>>>,
-           std::vector<std::pair<int,int>>> get_observation_information() const;
+	void get_one_board_and_edge(int u, int v, std::vector<std::pair<int,std::vector<uint64_t>>>& all_boards, std::vector<std::pair<int,int>>& boards_edges) const;
+	std::tuple<std::vector<std::pair<int,std::vector<uint64_t>>>, std::vector<std::pair<int,int>>> get_boards_and_edges() const;
+	template <bool COLOR> std::vector<std::pair<int,std::vector<uint64_t>>> get_operable_boards_moves(bool allow_pass = false) const;
     
     std::string to_string() const;
     piece_t get_piece(vec4 a, bool color) const;
@@ -128,5 +127,117 @@ public:
     virtual std::string pretty_lt(vec4 p0) const = 0;
     virtual ~multiverse() = default;
 };
+
+/*
+ The following static functions describe the correspondence between two coordinate systems: L,T and u,v
+ 
+l_to_u make use of the bijection from integers to non-negative integers:
+x -> ~(x>>1)
+ */
+constexpr static int l_to_u(int l)
+{
+    if(l >= 0)
+        return l << 1;
+    else
+        return ~(l << 1);
+}
+
+constexpr static int tc_to_v(int t, bool c)
+{
+    return t << 1 | static_cast<int>(c);
+}
+
+constexpr static int u_to_l(int u)
+{
+    if(u & 1)
+        return ~(u >> 1);
+    else
+        return u >> 1;
+}
+
+constexpr static std::pair<int, bool> v_to_tc(int v)
+{
+    return {v >> 1, static_cast<bool>(v & 1)};
+}
+
+/**
+ * @brief Encodes 5D Chess move parameters into a single 64-bit unique move ID
+ * @note Flags field expanded from 4 bits to 8 bits (0-255 value range)
+ * @param u0 Source timeline layer (U axis)
+ * @param v0 Source timeline branch (V axis)
+ * @param y0 Source board Y coordinate
+ * @param x0 Source board X coordinate
+ * @param u1 Destination timeline layer (U axis)
+ * @param v1 Destination timeline branch (V axis)
+ * @param y1 Destination board Y coordinate
+ * @param x1 Destination board X coordinate
+ * @param pto Piece promotion type (4 bits)
+ * @param flags Move status flags (8 bits, expanded)
+ * @return Encoded 64-bit move identifier
+ * 
+ * Bit-field Layout (Total 56 bits used, 8 bits reserved):
+ * [Flags(8bit:0-7) | Pto(4bit:8-11) | X1(3bit:12-14) | Y1(3bit:15-17) | V1(8bit:18-25) | U1(8bit:26-33)]
+ * [X0(3bit:34-36) | Y0(3bit:37-39) | V0(8bit:40-47) | U0(8bit:48-55)]
+ */
+constexpr static uint64_t EncodeMoveId(int u0, int v0, int y0, int x0,
+                                     int u1, int v1, int y1, int x1,
+                                     int pto, int flags) {
+  uint64_t moveid = 0;
+  
+  // Move status flags: 8-bit width
+  moveid |= (static_cast<uint64_t>(flags) & 0xFFULL) << 0;
+  // Piece promotion type: 4-bit width
+  moveid |= (static_cast<uint64_t>(pto) & 0xFULL) << 8;
+  
+  // Destination position coordinates
+  moveid |= (static_cast<uint64_t>(x1) & 0x7ULL) << 12;
+  moveid |= (static_cast<uint64_t>(y1) & 0x7ULL) << 15;
+  moveid |= (static_cast<uint64_t>(v1) & 0xFFULL) << 18;
+  moveid |= (static_cast<uint64_t>(u1) & 0xFFULL) << 26;
+  
+  // Source position coordinates
+  moveid |= (static_cast<uint64_t>(x0) & 0x7ULL) << 34;
+  moveid |= (static_cast<uint64_t>(y0) & 0x7ULL) << 37;
+  moveid |= (static_cast<uint64_t>(v0) & 0xFFULL) << 40;
+  moveid |= (static_cast<uint64_t>(u0) & 0xFFULL) << 48;
+  
+  return moveid;
+}
+
+/**
+ * @brief Decodes a 64-bit move ID back to original 5D Chess move parameters
+ * @param moveid Encoded 64-bit move identifier
+ * @return Tuple of decoded parameters: (u0, v0, y0, x0, u1, v1, y1, x1, pto, flags)
+ */
+constexpr static std::tuple<int, int, int, int, int, int, int, int, int, int> 
+DecodeMoveId(uint64_t moveid) {
+  // Decode source position coordinates
+  int u0 = static_cast<int>((moveid >> 48) & 0xFF);
+  int v0 = static_cast<int>((moveid >> 40) & 0xFF);
+  int y0 = static_cast<int>((moveid >> 37) & 0x7);
+  int x0 = static_cast<int>((moveid >> 34) & 0x7);
+  
+  // Decode destination position coordinates
+  int u1 = static_cast<int>((moveid >> 26) & 0xFF);
+  int v1 = static_cast<int>((moveid >> 18) & 0xFF);
+  int y1 = static_cast<int>((moveid >> 15) & 0x7);
+  int x1 = static_cast<int>((moveid >> 12) & 0x7);
+  
+  // Decode piece promotion type and move status flags
+  int pto = static_cast<int>((moveid >> 8) & 0xF);
+  int flags = static_cast<int>((moveid >> 0) & 0xFF);
+  
+  return {u0, v0, y0, x0, u1, v1, y1, x1, pto, flags};
+}
+
+constexpr static int EncodeBoardId(int u, int v) {
+  return static_cast<int>(((u & 0xFF) << 8) | (v & 0xFF));
+}
+
+constexpr static std::pair<int, int> DecodeBoardId(int board_id) {
+  int u = (board_id >> 8) & 0xFF;
+  int v = board_id & 0xFF;
+  return {u, v};
+}
 
 #endif /* MULTIVERSE_BASE_H */

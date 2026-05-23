@@ -8,9 +8,9 @@
 #include <set>
 #include <string>
 #include <tuple>
+#include <functional>
 #include <utility>
 #include <iostream>
-#include <functional>
 #include "multiverse.h"
 #include "action.h"
 #include "generator.h"
@@ -25,6 +25,7 @@ class state
     */
     int present;
     bool player;
+	bool has_passed;
     
     template<bool C>
     std::vector<vec4> gen_movable_pieces_impl(std::vector<int> lines) const;
@@ -39,12 +40,12 @@ class state
 
 public:
     state(multiverse &mtv) noexcept;
-    state(const pgnparser_ast::game &g);
+    state(const pgnparser_ast::game &g, std::function<void(const state&, const ext_move&)> on_step = nullptr);
     virtual ~state() = default;
     
     // standard copy-constructors
     state(const state& other)
-    : m{other.m->clone()}, present{other.present}, player{other.player} {}
+    : m{other.m->clone()}, present{other.present}, player{other.player},  has_passed{other.has_passed} {}
     state(state&&) noexcept = default;
     state& operator=(state other) noexcept {
         swap(*this, other);
@@ -54,6 +55,8 @@ public:
         std::swap(a.m, b.m);
         std::swap(a.present, b.present);
         std::swap(a.player, b.player);
+		std::swap(a.has_passed, b.has_passed);
+
     }
 
 
@@ -71,6 +74,8 @@ public:
      */
     template<bool UNSAFE = false>
     bool apply_move(full_move fm, piece_t promote_to = QUEEN_W);
+	std::vector<std::pair<int,int>> apply_move_and_return_new_boards(full_move fm, piece_t promote_to);
+	void unapply_move_by_new_boards(std::vector<std::pair<int,int>> new_boards);
     template<bool UNSAFE = false>
     bool submit();
     
@@ -171,13 +176,11 @@ public:
     std::string to_string() const;
     std::string show_fen() const;
 
-	template <bool COLOR> bool process_been_checked_boards(std::vector<std::pair<int,std::vector<uint64_t>>> &operable_boards) const;
-    template <bool COLOR> std::tuple<std::vector<std::pair<int, std::vector<uint64_t>>>,
-        std::vector<std::pair<int, std::vector<uint64_t>>>,
-        std::vector<std::pair<int, int>>> get_observation_information() const;
+	std::tuple<std::vector<std::pair<int,std::vector<uint64_t>>>, std::vector<std::pair<int,int>>> get_boards_and_edges() const;
+	std::vector<std::pair<int,std::vector<uint64_t>>> get_operable_boards_moves_and_match_status(match_status_t &ms) const;
+	bool big_round_over() const;
 
-    match_status_t get_match_status(std::function<bool(int64_t)> cb = nullptr) const;
-    
+	
     /*
     parse_move: Given a state `s` and a move in string format `move`, try to parse the move and match it to a unique full_move in the context of state `s`.
     - If successful, return a tuple with first index set to the matched full_move and second index set to the promotion piece if any.
@@ -186,7 +189,6 @@ public:
     using parse_pgn_res = std::tuple<std::optional<full_move>, std::optional<piece_t>, std::vector<full_move>>;
     parse_pgn_res parse_move(const pgnparser_ast::move &move) const;
     parse_pgn_res parse_move(const std::string &move) const;
-
 };
 
 #include "state.inl"
